@@ -1,0 +1,16 @@
+# 排除所有輸出的 NetCDF 與結果檔
+*_map.nc
+*_his.nc
+*_rst.nc
+*_runtimings.nc
+*_waq.nc
+
+# 排除診斷與日誌檔
+*.dia
+*.log
+*.bak
+*.tmp
+*.err
+
+# 強制保留輸入的網格檔
+!*_net.nc

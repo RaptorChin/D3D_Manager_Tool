@@ -1,0 +1,12 @@
+# 忽略 Python 暫存檔
+__pycache__/
+*.pyc
+
+# 忽略虛擬環境（如果你未來有建立的話）
+.venv/
+venv/
+env/
+
+# 忽略爬蟲抓下來的資料報表
+*.csv
+*.xlsx
