@@ -1,0 +1,4 @@
+{
+  "name": "D3D Manager Tool",
+  "install": "bash .cursor/install.sh"
+}
