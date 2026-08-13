@@ -2,6 +2,11 @@
 __pycache__/
 *.pyc
 
+# 忽略 PyInstaller 建置產物
+build/
+dist/
+*.spec
+
 # 忽略虛擬環境（如果你未來有建立的話）
 .venv/
 venv/
