@@ -17,7 +17,7 @@ SHOW_SCENARIO_AND_RUN_TABS = False
 class D3DManagerApp:
     def __init__(self, root):
         self.root = root
-        self.root.title("🌊 D-Flow FM 模式檔案管理系統")
+        self.root.title("🌊 D-Flow 模式檔案管理系統")
         self.root.geometry("950x800")
         
         self.repo_path = ""
