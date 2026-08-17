@@ -12,7 +12,8 @@ ctk.set_appearance_mode("System")
 ctk.set_default_color_theme("blue")
 
 # 暫時隱藏「情境參數設定」「執行模擬」（目前僅使用建置與備份）
-SHOW_SCENARIO_AND_RUN_TABS = False  
+SHOW_SCENARIO_AND_RUN_TABS = False
+FOLDER_PLACEHOLDER = "(請先選擇工作資料夾)"
 
 class D3DManagerApp:
     def __init__(self, root):
@@ -26,6 +27,9 @@ class D3DManagerApp:
         self.mdu_data = None
         
         self.setup_ui()
+        self.refresh_git_identity_display()
+        # 啟動後若尚未設定全域身分，自動開啟設定畫面
+        self.root.after(200, self._check_git_identity_on_startup)
 
     def setup_ui(self):
         font_title = ctk.CTkFont(family="微軟正黑體", size=14, weight="bold")
@@ -43,6 +47,27 @@ class D3DManagerApp:
         ctk.CTkButton(frame_top, text="📥 從雲端下載 (Clone)", font=font_normal, fg_color="#2B7A0B", hover_color="#1E5607", command=self.open_clone_dialog, width=150).pack(side="left", padx=5)
         ctk.CTkButton(frame_top, text="狀態檢查", font=font_normal, fg_color="#5A5A5A", hover_color="#404040", command=self.init_git, width=100).pack(side="left", padx=5)
 
+        frame_identity = ctk.CTkFrame(self.root, corner_radius=10)
+        frame_identity.pack(fill="x", padx=15, pady=(0, 5))
+        ctk.CTkLabel(frame_identity, text="Git 身分:", font=font_title).pack(side="left", padx=10, pady=10)
+        self.git_identity_var = ctk.StringVar(value="尚未設定")
+        ctk.CTkLabel(
+            frame_identity,
+            textvariable=self.git_identity_var,
+            font=font_normal,
+            text_color="#3498DB",
+            anchor="w",
+        ).pack(side="left", padx=5, fill="x", expand=True)
+        ctk.CTkButton(
+            frame_identity,
+            text="⚙️ 設定 Git 身分",
+            font=font_normal,
+            width=140,
+            fg_color="#5A5A5A",
+            hover_color="#404040",
+            command=self.open_git_identity_dialog,
+        ).pack(side="right", padx=10, pady=8)
+
         frame_history = ctk.CTkFrame(self.root, corner_radius=10)
         frame_history.pack(fill="x", padx=15, pady=5)
         
@@ -50,7 +75,14 @@ class D3DManagerApp:
         history_top.pack(fill="x", padx=10, pady=(10, 0))
         
         ctk.CTkLabel(history_top, text="⏳ 時光機 (切換版本):", font=font_title).pack(side="left")
-        self.branch_combo = ctk.CTkComboBox(history_top, width=250, font=font_normal, command=self.on_branch_select)
+        self.branch_combo = ctk.CTkComboBox(
+            history_top,
+            width=250,
+            font=font_normal,
+            values=[FOLDER_PLACEHOLDER],
+            command=self.on_branch_select,
+        )
+        self.branch_combo.set(FOLDER_PLACEHOLDER)
         self.branch_combo.pack(side="left", padx=10)
         
         ctk.CTkButton(history_top, text="重新整理", font=font_normal, width=80, fg_color="#5A5A5A", hover_color="#404040", command=self.refresh_branches).pack(side="left", padx=5)
@@ -65,7 +97,14 @@ class D3DManagerApp:
         frame_mdu = ctk.CTkFrame(self.root, corner_radius=10)
         frame_mdu.pack(fill="x", padx=15, pady=10)
         ctk.CTkLabel(frame_mdu, text="選擇主控檔 (.mdu):", font=font_title).pack(side="left", padx=10, pady=10)
-        self.mdu_combo = ctk.CTkComboBox(frame_mdu, width=400, font=font_normal, command=self.on_mdu_select)
+        self.mdu_combo = ctk.CTkComboBox(
+            frame_mdu,
+            width=400,
+            font=font_normal,
+            values=[FOLDER_PLACEHOLDER],
+            command=self.on_mdu_select,
+        )
+        self.mdu_combo.set(FOLDER_PLACEHOLDER)
         self.mdu_combo.pack(side="left", padx=5)
 
         self.tabview = ctk.CTkTabview(self.root, corner_radius=10)
@@ -99,12 +138,90 @@ class D3DManagerApp:
     def quit_app(self):
         self.root.destroy()
 
+    def refresh_git_identity_display(self):
+        name, email = GitModelManager.get_global_user_identity()
+        if name and email:
+            self.git_identity_var.set(f"{name}  <{email}>")
+        elif name or email:
+            self.git_identity_var.set(f"{name or '(未設定名稱)'}  <{email or '(未設定信箱)'}>")
+        else:
+            self.git_identity_var.set("尚未設定（儲存版本前請先設定）")
+
+    def _check_git_identity_on_startup(self):
+        if not GitModelManager.is_global_user_configured():
+            self.open_git_identity_dialog(force_prompt=True)
+
+    def open_git_identity_dialog(self, force_prompt=False):
+        win = ctk.CTkToplevel(self.root)
+        win.title("⚙️ 設定 Git 身分")
+        win.geometry("520x320")
+        win.grab_set()
+        win.focus_force()
+
+        tip = (
+            "第一次使用 Git 請先設定身分，之後建立的版本都會署名為此名稱與信箱。\n"
+            "此設定寫入本機全域（git config --global），與目前專案無關。"
+            if force_prompt
+            else "可隨時修改本機全域的 Git 使用者名稱與信箱。"
+        )
+        ctk.CTkLabel(win, text=tip, font=("微軟正黑體", 12), justify="left", wraplength=460).pack(
+            anchor="w", padx=20, pady=(20, 10)
+        )
+
+        name, email = GitModelManager.get_global_user_identity()
+
+        ctk.CTkLabel(win, text="使用者名稱:", font=("微軟正黑體", 13, "bold")).pack(anchor="w", padx=20, pady=(8, 4))
+        name_entry = ctk.CTkEntry(win, width=440, font=("微軟正黑體", 13), placeholder_text="例如：王小明")
+        name_entry.pack(anchor="w", padx=20)
+        if name:
+            name_entry.insert(0, name)
+
+        ctk.CTkLabel(win, text="電子郵件:", font=("微軟正黑體", 13, "bold")).pack(anchor="w", padx=20, pady=(12, 4))
+        email_entry = ctk.CTkEntry(win, width=440, font=("微軟正黑體", 13), placeholder_text="例如：wang@company.com")
+        email_entry.pack(anchor="w", padx=20)
+        if email:
+            email_entry.insert(0, email)
+
+        btn_row = ctk.CTkFrame(win, fg_color="transparent")
+        btn_row.pack(fill="x", padx=20, pady=25)
+
+        def save_identity():
+            try:
+                msg = GitModelManager.set_global_user_identity(name_entry.get(), email_entry.get())
+                self.refresh_git_identity_display()
+                messagebox.showinfo("設定完成", msg, parent=win)
+                win.destroy()
+            except Exception as e:
+                messagebox.showerror("設定失敗", str(e), parent=win)
+
+        ctk.CTkButton(
+            btn_row,
+            text="💾 儲存設定",
+            font=("微軟正黑體", 13, "bold"),
+            fg_color="#0275D8",
+            command=save_identity,
+            width=140,
+        ).pack(side="left")
+
+        later_text = "稍後再說" if force_prompt else "取消"
+        ctk.CTkButton(
+            btn_row,
+            text=later_text,
+            font=("微軟正黑體", 13),
+            fg_color="#5A5A5A",
+            hover_color="#404040",
+            command=win.destroy,
+            width=100,
+        ).pack(side="left", padx=10)
+
     def on_branch_select(self, choice=None):
-        if not self.git_mgr: return
+        if not self.git_mgr:
+            return
         selected = self.branch_combo.get()
-        if selected:
-            desc = self.git_mgr.get_branch_info(selected)
-            self.branch_desc_var.set(desc)
+        if not selected or selected == FOLDER_PLACEHOLDER:
+            return
+        desc = self.git_mgr.get_branch_info(selected)
+        self.branch_desc_var.set(desc)
 
     # 🌟 重新設計的核心載入流程
     def load_project(self):
@@ -198,23 +315,34 @@ class D3DManagerApp:
             self.mdu_combo.set(self.mdu_files[0])
             self.on_mdu_select(None)
         else:
-            self.mdu_combo.configure(values=[])
-            self.mdu_combo.set('')
+            empty_label = "(找不到 .mdu 檔案)"
+            self.mdu_combo.configure(values=[empty_label])
+            self.mdu_combo.set(empty_label)
 
     def refresh_branches(self):
-        if self.git_mgr:
-            branches = self.git_mgr.get_all_branches()
+        if not self.git_mgr:
+            self.branch_combo.configure(values=[FOLDER_PLACEHOLDER])
+            self.branch_combo.set(FOLDER_PLACEHOLDER)
+            self.branch_desc_var.set("請選擇版本以查看說明...")
+            return
+        branches = self.git_mgr.get_all_branches()
+        if branches:
             self.branch_combo.configure(values=branches)
-            if branches:
-                current = self.git_mgr.get_current_branch()
-                selected = current if current in branches else branches[0]
-                self.branch_combo.set(selected)
-                self.on_branch_select(selected)
+            current = self.git_mgr.get_current_branch()
+            selected = current if current in branches else branches[0]
+            self.branch_combo.set(selected)
+            self.on_branch_select(selected)
+        else:
+            self.branch_combo.configure(values=[FOLDER_PLACEHOLDER])
+            self.branch_combo.set(FOLDER_PLACEHOLDER)
+            self.branch_desc_var.set("請選擇版本以查看說明...")
 
     def restore_version(self):
-        if not self.git_mgr: return
+        if not self.git_mgr:
+            return
         selected_version = self.branch_combo.get()
-        if not selected_version: return
+        if not selected_version or selected_version == FOLDER_PLACEHOLDER:
+            return
         confirm = messagebox.askyesno("⚠️ 時光倒流確認", f"確定要將專案恢復到【{selected_version}】嗎？\n\n資料夾內的設定檔將瞬間被替換成該版本的內容！")
         if confirm:
             try:
@@ -226,6 +354,8 @@ class D3DManagerApp:
 
     def on_mdu_select(self, choice=None):
         selected_mdu = self.mdu_combo.get()
+        if not selected_mdu or selected_mdu == FOLDER_PLACEHOLDER or selected_mdu == "(找不到 .mdu 檔案)":
+            return
         if selected_mdu and os.path.exists(selected_mdu):
             self.mdu_data = MduParser.read_mdu(selected_mdu)
             current_tstop = self.mdu_data['time'].get('Tstop', '86400') if 'time' in self.mdu_data else '86400'
@@ -440,7 +570,7 @@ class D3DManagerApp:
         ).pack(anchor="w", padx=20, pady=(20, 5))
         ctk.CTkLabel(
             clone_win,
-            text="內網只同步 .dsproj / .dsproj_data；會依目前版本新增「.1-Pull」版本，說明為 Pull from server。",
+            text="內網只同步 .dsproj / .dsproj_data；會依目前版本新增「.1-Pull」版本，說明為 Pull from server 加上當下日期時間。",
             font=("微軟正黑體", 11),
             text_color="gray",
         ).pack(anchor="w", padx=20, pady=(0, 5))
@@ -495,7 +625,10 @@ class D3DManagerApp:
         try:
             new_version = GitModelManager.clone_repo(url, final_path, update_ui)
             def _success():
-                extra = f"\n\n新版本：{new_version}\n說明：Pull from server" if new_version else ""
+                extra = ""
+                if new_version:
+                    desc = GitModelManager(final_path).get_branch_info(new_version).strip()
+                    extra = f"\n\n新版本：{new_version}\n說明：{desc or 'Pull from server'}"
                 messagebox.showinfo(
                     "下載完成 🎉",
                     f"已同步執行檔至：\n{final_path}{extra}",

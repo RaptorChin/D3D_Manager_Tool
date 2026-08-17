@@ -2,6 +2,7 @@ import subprocess
 import os
 import re
 import shutil
+from datetime import datetime
 
 # GitHub / 多數遠端的硬性上限約 100MB；超過此值且未走 LFS 會被拒絕
 LARGE_FILE_SOFT_MB = 50
@@ -11,6 +12,71 @@ LARGE_FILE_HARD_MB = 90
 class GitModelManager:
     def __init__(self, repo_path):
         self.repo_path = repo_path
+
+    @staticmethod
+    def _no_window_flags():
+        return subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
+
+    @staticmethod
+    def get_global_user_identity():
+        """讀取全域 Git 使用者名稱與信箱，回傳 (name, email)。"""
+        name, email = "", ""
+        flags = GitModelManager._no_window_flags()
+        try:
+            r = subprocess.run(
+                ["git", "config", "--global", "--get", "user.name"],
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                creationflags=flags,
+            )
+            if r.returncode == 0:
+                name = (r.stdout or "").strip()
+        except Exception:
+            pass
+        try:
+            r = subprocess.run(
+                ["git", "config", "--global", "--get", "user.email"],
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                creationflags=flags,
+            )
+            if r.returncode == 0:
+                email = (r.stdout or "").strip()
+        except Exception:
+            pass
+        return name, email
+
+    @staticmethod
+    def is_global_user_configured():
+        """全域 user.name 與 user.email 是否皆已設定。"""
+        name, email = GitModelManager.get_global_user_identity()
+        return bool(name) and bool(email)
+
+    @staticmethod
+    def set_global_user_identity(name, email):
+        """寫入全域 Git 使用者名稱與信箱。"""
+        name = (name or "").strip()
+        email = (email or "").strip()
+        if not name or not email:
+            raise Exception("使用者名稱與信箱皆不可空白。")
+        flags = GitModelManager._no_window_flags()
+        for key, value in (("user.name", name), ("user.email", email)):
+            result = subprocess.run(
+                ["git", "config", "--global", key, value],
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                creationflags=flags,
+            )
+            if result.returncode != 0:
+                detail = (result.stderr or result.stdout or "").strip()
+                raise Exception(f"無法設定 {key}：\n{detail or '(無 Git 輸出)'}")
+        return f"已設定全域身分：{name} <{email}>"
 
     def is_initialized(self):
         """檢查資料夾是否已經建立過 Git 版本控制"""
@@ -400,8 +466,15 @@ class GitModelManager:
             return f"{match.group(1)}.{int(match.group(2)) + 1}-Pull"
         return f"{current_name}.1-Pull"
 
+    @staticmethod
+    def make_pull_commit_message(description="Pull from server"):
+        """Pull 補充說明：原文後面加上本機日期與時間"""
+        stamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        base = (description or "Pull from server").strip() or "Pull from server"
+        return f"{base} {stamp}"
+
     def create_pull_version(self, description="Pull from server"):
-        """新增 pull 版本分支，說明固定為 Pull from server"""
+        """新增 pull 版本分支，說明為 Pull from server 加上當下日期時間"""
         current = self.get_current_branch()
         name = self.next_pull_version_name(current)
         existing = set(self.get_all_branches())
@@ -414,7 +487,8 @@ class GitModelManager:
         except Exception:
             pass
         self._stage_dsproj_only()
-        self._run_git(["commit", "--allow-empty", "-m", description])
+        message = self.make_pull_commit_message(description)
+        self._run_git(["commit", "--allow-empty", "-m", message])
         return name
 
     def get_all_branches(self):
