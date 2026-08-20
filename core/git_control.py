@@ -10,6 +10,11 @@ LARGE_FILE_HARD_MB = 90
 
 
 class GitModelManager:
+    # 內網遠端資料夾裡，實際存放 Git 版本紀錄（裸儲存庫）的子資料夾名稱；
+    # 執行檔（.dsproj / .dsproj_data）另外直接放在遠端資料夾最上層，兩者互不干涉，
+    # 徹底避開「Git 工作目錄 vs 直接複製檔案」互相打架導致 push 被拒絕的問題
+    REMOTE_HISTORY_DIRNAME = ".d3d_version_history.git"
+
     def __init__(self, repo_path):
         self.repo_path = repo_path
 
@@ -49,6 +54,47 @@ class GitModelManager:
         except Exception:
             pass
         return name, email
+
+    @staticmethod
+    def ensure_global_safe_directory():
+        """UNC/內網共用路徑常被 Git 判定為「擁有權可疑」而整組拒絕操作（CVE-2022-24765 防護）。
+        此工具本來就要跨多個網路芳鄰路徑存取版本庫，因此在全域信任清單加入萬用字元，
+        避免每個專案資料夾都得手動排除一次。"""
+        flags = GitModelManager._no_window_flags()
+        try:
+            check = subprocess.run(
+                ["git", "config", "--global", "--get-all", "safe.directory"],
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                creationflags=flags,
+            )
+            existing = [line.strip() for line in (check.stdout or "").splitlines()]
+            if "*" in existing:
+                return
+        except Exception:
+            pass
+        try:
+            subprocess.run(
+                ["git", "config", "--global", "--add", "safe.directory", "*"],
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                creationflags=flags,
+            )
+        except Exception:
+            pass
+
+    @staticmethod
+    def resolve_git_root(path):
+        """若 path 是本工具慣例的『內網遠端』資料夾（實體檔案 + 子資料夾式裸儲存庫），
+        回傳實際存放 Git 版本紀錄的子資料夾路徑；否則原樣傳回（一般本機專案資料夾）。"""
+        sub = os.path.join(path, GitModelManager.REMOTE_HISTORY_DIRNAME)
+        if GitModelManager._is_bare_repo(sub):
+            return sub
+        return path
 
     @staticmethod
     def is_global_user_configured():
@@ -492,24 +538,93 @@ class GitModelManager:
         return name
 
     def get_all_branches(self):
+        """列出可切換的版次名稱，依最新一次提交時間「新到舊」排序：
+        本機分支 + 已下載但尚未建立本機分支的遠端分支（去除 origin/ 前綴、去重）。
+
+        例如剛用「從雲端下載」拿到完整歷史時，只有目前所在的分支會有本機分支，其餘版次都只存在
+        於 origin/xxx 這種遠端追蹤分支裡；若這裡只列本機分支，時光機選單會看不到其他人 push 過的版次。
+        改用 commit 時間排序，是因為裸儲存庫（內網遠端）沒有工作目錄、HEAD 永遠停留在建立當下設定
+        的分支（例如 main），並不會因為之後推送了其他版次而改變，不能拿來當作「最新版次」的依據。
+        """
         try:
             result = subprocess.run(
-                "git branch",
-                cwd=self.repo_path,
-                capture_output=True,
-                text=True,
-                shell=True,
+                ["git", "for-each-ref", "--sort=-committerdate", "--format=%(refname)",
+                 "refs/heads", "refs/remotes"],
+                cwd=self.repo_path, capture_output=True, text=True,
+                encoding="utf-8", errors="replace",
             )
             if result.returncode != 0:
                 return ["main"]
-            branches = []
+            names = []
+            seen = set()
             for line in result.stdout.split("\n"):
-                if line.strip():
-                    clean_name = line.replace("*", "").strip()
-                    branches.append(clean_name)
-            return branches
+                ref = line.strip()
+                if not ref:
+                    continue
+                if ref.startswith("refs/heads/"):
+                    name = ref[len("refs/heads/"):]
+                elif ref.startswith("refs/remotes/"):
+                    rest = ref[len("refs/remotes/"):]
+                    if "/" not in rest or rest.endswith("/HEAD"):
+                        continue  # origin/HEAD 這種指標行，跳過
+                    name = rest.split("/", 1)[1]  # 去掉遠端名稱前綴（例如 origin/），branch 名稱本身的斜線要保留
+                else:
+                    continue
+                if name and name not in seen:
+                    seen.add(name)
+                    names.append(name)
+            return names if names else ["main"]
         except Exception:
             return ["main"]
+
+    def get_latest_branch(self):
+        """回傳「最新一次提交」所在的版次名稱，即 get_all_branches() 排序後的第一個。"""
+        branches = self.get_all_branches()
+        return branches[0] if branches else None
+
+    def get_commit_log(self, branch_name=None, max_count=200):
+        """取得指定版次(分支)的提交紀錄，回傳 [{hash, author, email, date, message}, ...]（新到舊）"""
+        field_sep = "\x1f"
+        record_sep = "\x1e"
+        fmt = f"%h{field_sep}%an{field_sep}%ae{field_sep}%ad{field_sep}%s{record_sep}"
+        args = [
+            "git", "log",
+            f"--max-count={max_count}",
+            f"--pretty=format:{fmt}",
+            "--date=format:%Y-%m-%d %H:%M",
+        ]
+        if branch_name:
+            args.append(branch_name)
+        try:
+            result = subprocess.run(
+                args,
+                cwd=self.repo_path,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+            )
+            if result.returncode != 0:
+                return []
+            commits = []
+            for record in result.stdout.split(record_sep):
+                record = record.strip("\n")
+                if not record.strip():
+                    continue
+                parts = record.split(field_sep)
+                if len(parts) < 5:
+                    continue
+                commit_hash, author, email, date, message = parts[:5]
+                commits.append({
+                    "hash": commit_hash,
+                    "author": author,
+                    "email": email,
+                    "date": date,
+                    "message": message,
+                })
+            return commits
+        except Exception:
+            return []
 
     def get_branch_info(self, branch_name):
         try:
@@ -640,30 +755,6 @@ class GitModelManager:
             pass
         return True
 
-    def _run_git_at(self, git_dir, args, work_tree=None):
-        cmd = ["git", "--git-dir", self._to_git_path(git_dir)]
-        if work_tree:
-            cmd += ["--work-tree", self._to_git_path(work_tree)]
-        cmd += args
-        return subprocess.run(
-            cmd,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-        )
-
-    def _configure_working_remote(self, path):
-        git_dir = os.path.join(path, ".git")
-        for key, value in (
-            ("core.bare", "false"),
-            ("receive.denyCurrentBranch", "updateInstead"),
-        ):
-            result = self._run_git_at(git_dir, ["config", key, value], work_tree=path)
-            if result.returncode != 0:
-                detail = (result.stderr or result.stdout or "").strip()
-                raise Exception(f"無法設定遠端工作區：\n{path}\n{detail}")
-
     def _ensure_bare_repo(self, path):
         os.makedirs(path, exist_ok=True)
         if self._is_dot_git_named_path(path):
@@ -671,49 +762,70 @@ class GitModelManager:
         if self._is_bare_repo(path):
             return
         result = subprocess.run(
-            ["git", "init", "--bare", self._to_git_path(path)],
+            ["git", "init", "--bare", "-b", "main", self._to_git_path(path)],
             capture_output=True,
             text=True,
             encoding="utf-8",
             errors="replace",
         )
         if result.returncode != 0:
-            detail = (result.stderr or result.stdout or "").strip()
-            raise Exception(f"無法在遠端路徑建立裸儲存庫：\n{path}\n{detail}")
-
-    def ensure_filesystem_remote(self, remote_url):
-        """內網遠端：Git 追蹤與 .dsproj 執行檔都放在同一個資料夾"""
-        if not self.is_filesystem_remote(remote_url):
-            return
-        path = self.filesystem_remote_to_path(remote_url)
-        os.makedirs(path, exist_ok=True)
-
-        if self._is_dot_git_named_path(path) or self._is_bare_repo(path):
-            self._ensure_bare_repo(path)
-            return
-
-        git_dir = os.path.join(path, ".git")
-        if not os.path.isdir(git_dir):
             result = subprocess.run(
-                ["git", "init", "-b", "main", self._to_git_path(path)],
+                ["git", "init", "--bare", self._to_git_path(path)],
                 capture_output=True,
                 text=True,
                 encoding="utf-8",
                 errors="replace",
             )
-            if result.returncode != 0:
-                result = subprocess.run(
-                    ["git", "init", self._to_git_path(path)],
-                    capture_output=True,
-                    text=True,
-                    encoding="utf-8",
-                    errors="replace",
-                )
-            if result.returncode != 0:
-                detail = (result.stderr or result.stdout or "").strip()
-                raise Exception(f"無法在遠端路徑建立儲存庫：\n{path}\n{detail}")
+        if result.returncode != 0:
+            detail = (result.stderr or result.stdout or "").strip()
+            raise Exception(f"無法在遠端路徑建立裸儲存庫：\n{path}\n{detail}")
 
-        self._configure_working_remote(path)
+    def ensure_filesystem_remote(self, remote_url):
+        """內網遠端：Git 版本紀錄放在子資料夾式的裸儲存庫（REMOTE_HISTORY_DIRNAME），
+        執行檔（.dsproj / .dsproj_data）由 deploy_runnable_files() 另外直接放在同一層資料夾最上層。
+
+        兩者完全分開存放：裸儲存庫沒有工作目錄，push 時純粹是版本資料庫更新，
+        不會再發生「Git 工作目錄 vs 直接複製檔案」互相打架、導致 push 被拒絕的問題。
+        """
+        if not self.is_filesystem_remote(remote_url):
+            return
+        path = self.filesystem_remote_to_path(remote_url)
+        os.makedirs(path, exist_ok=True)
+        bare_dir = os.path.join(path, self.REMOTE_HISTORY_DIRNAME)
+        self._ensure_bare_repo(bare_dir)
+
+    def _sync_lfs_objects(self, remote_path, progress_callback=None, base_pct=0, span=100):
+        """把本機 .git/lfs/objects 底下的物件直接複製一份到遠端，取代 Git LFS 本身在 Windows
+        UNC 路徑下有已知未修復 bug 的 lfs-standalone-file 轉送模式（純檔案複製不受該 bug 影響）。
+
+        物件檔名本身就是內容雜湊（content-addressed），檔名相同即代表內容相同，因此可以放心
+        用「已存在且大小相同」略過重複複製；缺少這一步的話，遠端在推送時自動檢出／未來直接對
+        遠端資料夾使用「時光機」還原版本時，LFS 追蹤的大型檔案都會因為找不到物件本體而失敗。
+        """
+        local_objects = os.path.join(self.repo_path, ".git", "lfs", "objects")
+        if not os.path.isdir(local_objects):
+            return
+        remote_objects = os.path.join(remote_path, self.REMOTE_HISTORY_DIRNAME, "lfs", "objects")
+
+        pending = []
+        for root_dir, _dirs, filenames in os.walk(local_objects):
+            rel_root = os.path.relpath(root_dir, local_objects)
+            for name in filenames:
+                src = os.path.join(root_dir, name)
+                dst = os.path.join(remote_objects, name) if rel_root == "." else os.path.join(remote_objects, rel_root, name)
+                if os.path.isfile(dst) and os.path.getsize(dst) == os.path.getsize(src):
+                    continue
+                pending.append((src, dst))
+
+        total = len(pending)
+        for i, (src, dst) in enumerate(pending):
+            os.makedirs(os.path.dirname(dst), exist_ok=True)
+            if progress_callback:
+                size_mb = os.path.getsize(src) / (1024 * 1024)
+                pct = base_pct + int(((i + 1) / max(total, 1)) * span)
+                if size_mb >= 5 or i % 10 == 0:
+                    progress_callback(f"正在同步 LFS 物件 ({i + 1}/{total})：{size_mb:.1f} MB", pct)
+            shutil.copy2(src, dst)
 
     def _list_dsproj_runtime_files(self):
         """列出本機要同步到遠端的執行檔（.dsproj 與 .dsproj_data 內所有檔案）"""
@@ -784,8 +896,14 @@ class GitModelManager:
         if not remote_url:
             raise Exception("遠端路徑不可為空白")
 
+        # 內網共用資料夾：git config 裡實際存的 origin 要直接指向裸儲存庫子資料夾本身，
+        # 這樣 Git／Git LFS 自己觸發的操作（例如切換版本時即時下載該版本的 LFS 物件）才找得到路；
+        # 使用者看到、綁定用的仍是父層路徑，讀取時（get_remote_url）再把子資料夾後綴拿掉即可
+        actual_url = remote_url
         if self.is_filesystem_remote(remote_url):
             self.ensure_filesystem_remote(remote_url)
+            bare_dir = os.path.join(self.filesystem_remote_to_path(remote_url), self.REMOTE_HISTORY_DIRNAME)
+            actual_url = self._to_git_path(bare_dir)
 
         check = subprocess.run(
             "git remote",
@@ -796,9 +914,9 @@ class GitModelManager:
         )
         extra = self._filesystem_bind_hint(remote_url)
         if "origin" in (check.stdout or ""):
-            self._run_git(["remote", "set-url", "origin", remote_url])
+            self._run_git(["remote", "set-url", "origin", actual_url])
             return f"✅ 已更新遠端連結：\n{remote_url}{extra}"
-        self._run_git(["remote", "add", "origin", remote_url])
+        self._run_git(["remote", "add", "origin", actual_url])
         return f"✅ 已綁定遠端連結：\n{remote_url}{extra}"
 
     def _filesystem_bind_hint(self, remote_url):
@@ -806,9 +924,18 @@ class GitModelManager:
             return ""
         git_path = self.filesystem_remote_to_path(remote_url)
         return (
-            f"\n\n推送後會把 Git 追蹤與模式執行檔放在同一個資料夾：\n{git_path}\n"
-            "僅包含 .dsproj 與 .dsproj_data。"
+            f"\n\n推送後會把模式執行檔（.dsproj / .dsproj_data）放在：\n{git_path}\n"
+            f"Git 版本紀錄則另外存放在同一層的 {self.REMOTE_HISTORY_DIRNAME} 子資料夾（裸儲存庫），兩者互不干涉。"
         )
+
+    @staticmethod
+    def _strip_history_suffix(url):
+        """把內部實際使用的裸儲存庫子資料夾路徑，還原成使用者綁定、看到的父層路徑本身"""
+        normalized = (url or "").replace("\\", "/").rstrip("/")
+        suffix = "/" + GitModelManager.REMOTE_HISTORY_DIRNAME
+        if normalized.endswith(suffix):
+            return normalized[: -len(suffix)]
+        return url
 
     def get_remote_url(self):
         try:
@@ -820,7 +947,7 @@ class GitModelManager:
                 shell=True,
             )
             if result.returncode == 0 and result.stdout.strip():
-                return result.stdout.strip()
+                return self._strip_history_suffix(result.stdout.strip())
             return ""
         except Exception:
             return ""
@@ -870,8 +997,15 @@ class GitModelManager:
         filesystem = self.is_filesystem_remote(remote)
         self.prepare_for_push(progress_callback, require_lfs=not filesystem)
         if filesystem:
-            progress_callback("檢查／建立內網工作資料夾...", 15)
-            self.ensure_filesystem_remote(remote)
+            progress_callback("檢查／建立內網版本紀錄儲存庫...", 15)
+            # 每次推送前都重新確保 origin 指向裸儲存庫子資料夾的正確位置：
+            # 若這個本機資料夾是先前（改版前）就已經綁定過的舊設定，origin 會直接指向父層路徑本身，
+            # 不會自動更新；重新呼叫 set_remote_url() 可以自我修正，不必依賴使用者記得重新綁定
+            self.set_remote_url(remote)
+            progress_callback("正在同步 LFS 大型物件...", 17)
+            self._sync_lfs_objects(
+                self.filesystem_remote_to_path(remote), progress_callback, base_pct=17, span=35
+            )
 
         if not filesystem:
             progress_callback("正在上傳 LFS 大型檔案...", 20)
@@ -883,18 +1017,30 @@ class GitModelManager:
             )
 
         progress_callback("正在推送版本紀錄與分支...", 55 if filesystem else 65)
+        push_warning = None
+        push_env = None
+        if filesystem:
+            # Git LFS 的 lfs-standalone-file 轉送模式在 Windows 解析 UNC 路徑（\\主機\共用）有已知未修復的
+            # bug（chdir 失敗），推送到內網共用資料夾時跳過 Git LFS 自己的物件上傳流程；
+            # 物件內容已經由前面 _sync_lfs_objects() 用純檔案複製先送到遠端了。
+            # 裸儲存庫沒有工作目錄，push 純粹是版本資料庫更新，不會觸發任何檢出，
+            # 因此也不需要再擔心 smudge／工作目錄衝突的問題。
+            # origin 本身在 set_remote_url() 時就已經直接設成裸儲存庫子資料夾的實際路徑了
+            push_env = dict(os.environ, GIT_LFS_SKIP_PUSH="1")
         try:
             self._run_stream_command(
                 ["git", "push", "-u", "origin", "--all", "--progress"],
                 progress_callback,
                 base_pct=55 if filesystem else 65,
                 span=15 if filesystem else 35,
+                env=push_env,
             )
         except Exception as e:
-            # 內網資料夾仍可直接複製執行檔；版本紀錄失敗再一併提示
+            # 內網資料夾仍可直接複製執行檔；版本紀錄失敗改回傳給呼叫端明確提示，不能悄悄吞掉
             if not filesystem:
                 raise
-            progress_callback(f"版本紀錄推送警告（仍會複製執行檔）: {str(e)[:60]}", 68)
+            push_warning = str(e)
+            progress_callback(f"版本紀錄推送警告（仍會複製執行檔）: {push_warning[:60]}", 68)
 
         if filesystem:
             dest = self.filesystem_remote_to_path(remote)
@@ -906,8 +1052,9 @@ class GitModelManager:
             )
 
         progress_callback("上傳完成！", 100)
+        return push_warning
 
-    def _run_stream_command(self, command, progress_callback, base_pct=0, span=100):
+    def _run_stream_command(self, command, progress_callback, base_pct=0, span=100, env=None):
         try:
             process = subprocess.Popen(
                 command,
@@ -919,6 +1066,7 @@ class GitModelManager:
                 errors="replace",
                 bufsize=1,
                 creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
+                env=env,
             )
             buffer = ""
             full_log = []
@@ -1015,46 +1163,74 @@ class GitModelManager:
 
     @staticmethod
     def _clone_filesystem(url, target_path, progress_callback):
-        """只拉 .dsproj / .dsproj_data；不複製遠端 .git，改在本機 Git 新增 pull 紀錄"""
+        """從內網遠端資料夾同步：若遠端已有本工具建立的版本紀錄（子資料夾式裸儲存庫），
+        完整下載所有版次的歷史；否則退回舊行為（只複製目前檔案、在本機新增一筆 pull 記錄）。
+        """
         src = GitModelManager.filesystem_remote_to_path(url)
         if not os.path.isdir(src):
             raise Exception(f"找不到遠端資料夾：\n{src}\n請確認內網路徑可存取。")
 
         os.makedirs(target_path, exist_ok=True)
-        progress_callback("正在複製 .dsproj / .dsproj_data...", 20)
-        copied, total = GitModelManager._copy_dsproj_between(
-            src, target_path, progress_callback, base_pct=20, span=55
-        )
-        if copied == 0 and total == 0:
-            raise Exception(
-                f"遠端找不到 .dsproj 或 .dsproj_data。\n路徑：{src}"
-            )
+        no_window = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
+        bare_dir = os.path.join(src, GitModelManager.REMOTE_HISTORY_DIRNAME)
+        has_history = GitModelManager._is_bare_repo(bare_dir)
 
-        progress_callback("正在建立本機 pull 版本...", 80)
+        if has_history:
+            progress_callback("正在下載完整版本紀錄...", 10)
+            clone_url = GitModelManager._to_git_path(bare_dir)
+            dest_git = os.path.join(target_path, ".git")
+            if os.path.isdir(dest_git):
+                subprocess.run(["git", "remote", "remove", "origin"], cwd=target_path, capture_output=True, creationflags=no_window)
+                subprocess.run(["git", "remote", "add", "origin", clone_url], cwd=target_path, capture_output=True, creationflags=no_window)
+                fetch = subprocess.run(
+                    ["git", "fetch", "--all", "--progress"], cwd=target_path, capture_output=True,
+                    text=True, encoding="utf-8", errors="replace", creationflags=no_window,
+                )
+                if fetch.returncode != 0:
+                    detail = (fetch.stderr or fetch.stdout or "").strip()
+                    raise Exception(f"無法下載版本紀錄：\n{detail or '(無 Git 輸出)'}")
+                checkout = subprocess.run(
+                    ["git", "checkout", "-f", "-B", "main", "origin/main"], cwd=target_path, capture_output=True,
+                    text=True, encoding="utf-8", errors="replace", creationflags=no_window,
+                )
+                if checkout.returncode != 0:
+                    subprocess.run(
+                        ["git", "checkout", "-f", "-B", "master", "origin/master"], cwd=target_path,
+                        capture_output=True, creationflags=no_window,
+                    )
+            else:
+                result = subprocess.run(
+                    ["git", "clone", "--progress", clone_url, target_path], capture_output=True,
+                    text=True, encoding="utf-8", errors="replace", creationflags=no_window,
+                )
+                if result.returncode != 0:
+                    detail = (result.stderr or result.stdout or "").strip()
+                    raise Exception(f"無法下載版本紀錄：\n{detail or '(無 Git 輸出)'}")
+            progress_callback("正在下載 LFS 大型物件...", 45)
+            subprocess.run(["git", "lfs", "pull"], cwd=target_path, capture_output=True, creationflags=no_window)
+
         mgr = GitModelManager(target_path)
         if not mgr.is_initialized():
             mgr._run_git(["init"])
-            mgr.create_lfs_and_ignore_rules()
             try:
                 mgr._run_git(["branch", "-M", "main"])
             except Exception:
                 pass
-        else:
-            mgr.create_lfs_and_ignore_rules()
+        mgr.create_lfs_and_ignore_rules()
+        # 統一透過 set_remote_url()：內網遠端會把 origin 設成裸儲存庫子資料夾的實際路徑
+        # （讓之後切換版本時 Git LFS 自己觸發的下載也找得到路），而不是只設成看起來友善的父層路徑
+        mgr.set_remote_url(url)
 
-        origin = GitModelManager.normalize_remote_url(url)
-        check = subprocess.run(
-            "git remote",
-            cwd=target_path,
-            capture_output=True,
-            text=True,
-            shell=True,
+        progress_callback("正在複製 .dsproj / .dsproj_data 目前內容...", 60)
+        copied, total = GitModelManager._copy_dsproj_between(
+            src, target_path, progress_callback, base_pct=60, span=25
         )
-        if "origin" in (check.stdout or ""):
-            mgr._run_git(["remote", "set-url", "origin", origin])
-        else:
-            mgr._run_git(["remote", "add", "origin", origin])
+        if copied == 0 and total == 0 and not has_history:
+            raise Exception(
+                f"遠端找不到 .dsproj 或 .dsproj_data。\n路徑：{src}"
+            )
 
+        progress_callback("正在建立本機 pull 版本...", 90)
         version = mgr.create_pull_version("Pull from server")
         progress_callback(f"同步完成（執行檔 {copied}/{total}），新版本：{version}", 100)
         return version

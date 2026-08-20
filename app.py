@@ -25,7 +25,9 @@ class D3DManagerApp:
         self.mdu_files = []
         self.git_mgr = None
         self.mdu_data = None
-        
+        self.history_git_mgr = None
+
+        GitModelManager.ensure_global_safe_directory()
         self.setup_ui()
         self.refresh_git_identity_display()
         # 啟動後若尚未設定全域身分，自動開啟設定畫面
@@ -84,6 +86,7 @@ class D3DManagerApp:
         )
         self.branch_combo.set(FOLDER_PLACEHOLDER)
         self.branch_combo.pack(side="left", padx=10)
+        self._widen_combo_dropdown(self.branch_combo)
         
         ctk.CTkButton(history_top, text="重新整理", font=font_normal, width=80, fg_color="#5A5A5A", hover_color="#404040", command=self.refresh_branches).pack(side="left", padx=5)
         ctk.CTkButton(history_top, text="恢復至此版本", font=font_normal, width=120, fg_color="#D9534F", hover_color="#C9302C", command=self.restore_version).pack(side="left", padx=10)
@@ -115,6 +118,7 @@ class D3DManagerApp:
             self.tab2 = self.tabview.add('📝 情境參數設定')
             self.tab3 = self.tabview.add('▶️ 執行模擬')
         self.tab4 = self.tabview.add('☁️ 遠端伺服器備份')
+        self.tab5 = self.tabview.add('📜 版本歷史')
 
         self.tstop_var = ctk.StringVar()
         self.setup_tab4(font_title, font_normal)
@@ -122,6 +126,7 @@ class D3DManagerApp:
         if SHOW_SCENARIO_AND_RUN_TABS:
             self.setup_tab2(font_title, font_normal)
             self.setup_tab3(font_title, font_normal, font_code)
+        self.setup_tab5(font_title, font_normal, font_code)
 
         frame_bottom = ctk.CTkFrame(self.root, fg_color="transparent")
         frame_bottom.pack(fill="x", padx=15, pady=(0, 15))
@@ -134,6 +139,20 @@ class D3DManagerApp:
             hover_color="#C9302C",
             command=self.quit_app,
         ).pack(side="right")
+
+    @staticmethod
+    def _widen_combo_dropdown(combo, min_character_width=50):
+        """讓展開的下拉清單寬度貼近選單本身的像素寬度。
+
+        CTkComboBox 收合時的框體是用像素設定寬度，但展開清單其實是 Windows 原生選單，
+        寬度是依項目文字用 min_character_width 個字元的空白補滿去換算，兩者計算基準不同，
+        預設值（18）換算出來的清單會比框體窄很多。這裡直接調整內部的 _dropdown_menu，
+        用比較大的字元數補滿，讓清單寬度更貼近框體本身。
+        """
+        try:
+            combo._dropdown_menu.configure(min_character_width=min_character_width)
+        except Exception:
+            pass
 
     def quit_app(self):
         self.root.destroy()
@@ -295,6 +314,7 @@ class D3DManagerApp:
     def _post_load_project(self):
         """讀取檔案與更新畫面的最終步驟"""
         self.refresh_branches()
+        self._set_history_folder(self.repo_path)
         remote_url = self.git_mgr.get_remote_url()
         self.github_url.delete(0, "end")
         if remote_url:
@@ -348,7 +368,8 @@ class D3DManagerApp:
             try:
                 msg = self.git_mgr.switch_branch(selected_version)
                 messagebox.showinfo("成功", msg)
-                self.on_mdu_select(None) 
+                self.on_mdu_select(None)
+                self.refresh_commit_history()
             except Exception as e:
                 messagebox.showerror("切換失敗", str(e))
 
@@ -385,7 +406,8 @@ class D3DManagerApp:
             self.git_mgr.create_scenario_branch(f"build/{self.build_ver.get()}")
             msg = self.git_mgr.commit_scenario_changes(self.build_desc.get("1.0", "end").strip())
             messagebox.showinfo("儲存狀態", f"操作完成！\n{msg}")
-            self.refresh_branches() 
+            self.refresh_branches()
+            self.refresh_commit_history()
         except Exception as e:
             messagebox.showerror("錯誤", str(e))
 
@@ -540,16 +562,26 @@ class D3DManagerApp:
 
         def _push_task():
             try:
-                self.git_mgr.push_with_progress(update_ui)
-                self.root.after(
-                    0,
-                    lambda: messagebox.showinfo(
-                        "上傳成功 🎉",
-                        "已推送 Git 版本，並將 .dsproj 與 .dsproj_data 寫入同一個遠端資料夾。",
-                        parent=push_win,
-                    ),
-                )
-                self.root.after(0, push_win.destroy)
+                push_warning = self.git_mgr.push_with_progress(update_ui)
+                def _show_result():
+                    if push_warning:
+                        messagebox.showwarning(
+                            "⚠️ 執行檔已複製，但版本紀錄推送失敗",
+                            "已將 .dsproj 與 .dsproj_data 複製到遠端資料夾，"
+                            "但 Git 版本紀錄推送失敗，這次的變更歷程「不會」同步到遠端！\n\n"
+                            f"[詳細原因]\n{push_warning}\n\n"
+                            "常見原因：遠端資料夾內已存在非此工具管理的舊檔案，"
+                            "導致 Git 檢出版本時被拒絕覆蓋。請確認遠端路徑或聯絡管理員後再重新推送。",
+                            parent=push_win,
+                        )
+                    else:
+                        messagebox.showinfo(
+                            "上傳成功 🎉",
+                            "已推送 Git 版本，並將 .dsproj 與 .dsproj_data 寫入同一個遠端資料夾。",
+                            parent=push_win,
+                        )
+                    push_win.destroy()
+                self.root.after(0, _show_result)
             except Exception as e:
                 err = str(e)
                 self.root.after(0, lambda: messagebox.showerror("上傳失敗", err, parent=push_win))
@@ -646,6 +678,145 @@ class D3DManagerApp:
                 messagebox.showerror("下載失敗", msg, parent=clone_win)
                 btn_start.configure(state="normal")
             self.root.after(0, _fail)
+
+    def setup_tab5(self, font_title, font_normal, font_code):
+        folder_row = ctk.CTkFrame(self.tab5, fg_color="transparent")
+        folder_row.pack(fill="x", padx=20, pady=(20, 5))
+        ctk.CTkLabel(folder_row, text="查詢資料夾:", font=font_title).pack(side="left")
+        self.history_path_var = ctk.StringVar(value="(尚未指定，預設為目前專案資料夾)")
+        ctk.CTkEntry(
+            folder_row,
+            textvariable=self.history_path_var,
+            width=330,
+            font=font_normal,
+            state="readonly",
+        ).pack(side="left", padx=10)
+        ctk.CTkButton(
+            folder_row,
+            text="📂 瀏覽...",
+            font=font_normal,
+            width=90,
+            command=self.browse_history_folder,
+        ).pack(side="left", padx=5)
+        ctk.CTkButton(
+            folder_row,
+            text="☁️ 使用遠端備份路徑",
+            font=font_normal,
+            width=150,
+            fg_color="#5A5A5A",
+            hover_color="#404040",
+            command=self.use_remote_backup_for_history,
+        ).pack(side="left", padx=5)
+        ctk.CTkButton(
+            folder_row,
+            text="回到目前專案",
+            font=font_normal,
+            width=110,
+            fg_color="#5A5A5A",
+            hover_color="#404040",
+            command=self.use_current_project_for_history,
+        ).pack(side="left", padx=5)
+
+        top = ctk.CTkFrame(self.tab5, fg_color="transparent")
+        top.pack(fill="x", padx=20, pady=(10, 5))
+        ctk.CTkLabel(top, text="選擇版次(分支):", font=font_title).pack(side="left")
+        self.history_branch_combo = ctk.CTkComboBox(
+            top,
+            width=250,
+            font=font_normal,
+            values=[FOLDER_PLACEHOLDER],
+            command=self.on_history_branch_select,
+        )
+        self.history_branch_combo.set(FOLDER_PLACEHOLDER)
+        self.history_branch_combo.pack(side="left", padx=10)
+        self._widen_combo_dropdown(self.history_branch_combo)
+        ctk.CTkButton(
+            top,
+            text="重新整理",
+            font=font_normal,
+            width=80,
+            fg_color="#5A5A5A",
+            hover_color="#404040",
+            command=self.refresh_commit_history,
+        ).pack(side="left", padx=5)
+
+        self.history_text = ctk.CTkTextbox(self.tab5, font=font_code, wrap="word")
+        self.history_text.pack(fill="both", expand=True, padx=20, pady=(5, 20))
+        self._set_history_text("請先在上方指定要查詢的資料夾（預設為目前專案資料夾）。")
+
+    def browse_history_folder(self):
+        folder = filedialog.askdirectory(title="選擇要查詢版本歷史的資料夾（例如遠端伺服器備份路徑）")
+        if not folder:
+            return
+        self._set_history_folder(folder)
+
+    def use_current_project_for_history(self):
+        if not self.repo_path:
+            messagebox.showwarning("警告", "尚未載入任何專案資料夾。")
+            return
+        self._set_history_folder(self.repo_path)
+
+    def use_remote_backup_for_history(self):
+        url = self.github_url.get().strip() if hasattr(self, "github_url") else ""
+        if not url:
+            messagebox.showwarning("警告", "請先在「☁️ 遠端伺服器備份」分頁輸入並綁定遠端路徑。")
+            return
+        if not GitModelManager.is_filesystem_remote(url):
+            messagebox.showwarning("警告", "此功能僅支援內網共用資料夾路徑；GitHub 等網址請改用「瀏覽」選擇本機下載後的資料夾。")
+            return
+        path = GitModelManager.filesystem_remote_to_path(url)
+        if not os.path.isdir(path):
+            messagebox.showerror("錯誤", f"找不到遠端資料夾：\n{path}")
+            return
+        self._set_history_folder(path)
+
+    def _set_history_folder(self, folder):
+        self.history_path_var.set(folder)
+        self.history_git_mgr = GitModelManager(GitModelManager.resolve_git_root(folder))
+        self.refresh_commit_history()
+
+    def refresh_commit_history(self):
+        mgr = self.history_git_mgr
+        if not mgr:
+            self.history_branch_combo.configure(values=[FOLDER_PLACEHOLDER])
+            self.history_branch_combo.set(FOLDER_PLACEHOLDER)
+            self._set_history_text("請先在上方指定要查詢的資料夾。")
+            return
+        branches = mgr.get_all_branches()
+        if not branches:
+            self.history_branch_combo.configure(values=[FOLDER_PLACEHOLDER])
+            self.history_branch_combo.set(FOLDER_PLACEHOLDER)
+            self._set_history_text("尚無任何版次紀錄。")
+            return
+        self.history_branch_combo.configure(values=branches)
+        latest = mgr.get_latest_branch()
+        selected = latest if latest in branches else branches[0]
+        self.history_branch_combo.set(selected)
+        self.on_history_branch_select(selected)
+
+    def on_history_branch_select(self, choice=None):
+        mgr = self.history_git_mgr
+        if not mgr:
+            return
+        branch = self.history_branch_combo.get()
+        if not branch or branch == FOLDER_PLACEHOLDER:
+            return
+        commits = mgr.get_commit_log(branch)
+        if not commits:
+            self._set_history_text(f"「{branch}」尚無提交紀錄。")
+            return
+        lines = [f"📌 版次「{branch}」共 {len(commits)} 筆紀錄（新到舊）：\n"]
+        for c in commits:
+            lines.append(f"● {c['hash']}   {c['date']}   👤 {c['author']} <{c['email']}>")
+            lines.append(f"    {c['message']}")
+            lines.append("")
+        self._set_history_text("\n".join(lines))
+
+    def _set_history_text(self, text):
+        self.history_text.configure(state="normal")
+        self.history_text.delete("1.0", "end")
+        self.history_text.insert("end", text)
+        self.history_text.configure(state="disabled")
 
 if __name__ == "__main__":
     root = ctk.CTk()
