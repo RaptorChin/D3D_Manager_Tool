@@ -626,19 +626,36 @@ class GitModelManager:
         except Exception:
             return []
 
+    # 本程式自動產生的存檔訊息前綴：do_auto_commit()、prepare_for_push()、do_initial_setup()
+    # 都會用這些固定文字在目前分支上疊加一筆 commit；顯示「版本說明」時要跳過這些訊息，
+    # 往回找使用者自己填寫的最後一筆說明，避免自動存檔的空洞訊息把畫面蓋過去
+    _AUTO_COMMIT_PREFIXES = ("Auto Save:", "Auto Initial commit:")
+
     def get_branch_info(self, branch_name):
+        """回傳該分支「最後一筆有意義的建置說明」。
+
+        若分支目前 HEAD 是自動存檔留下的通用訊息，會往回找到使用者自己填寫的說明再顯示；
+        若整個分支從頭到尾都只有自動存檔訊息（例如剛初始化、還沒手動存過檔），才退回顯示最新一筆。
+        舊的說明文字本身從未被刪除或竄改，只是原本的顯示邏輯只抓 HEAD，才會被自動存檔的訊息蓋過去。
+        """
         try:
             result = subprocess.run(
-                ["git", "log", "-1", "--format=%B", branch_name],
+                ["git", "log", f"--format=%B{chr(0x1e)}", branch_name],
                 cwd=self.repo_path,
                 capture_output=True,
                 text=True,
                 encoding="utf-8",
                 errors="replace",
             )
-            if result.returncode == 0 and result.stdout.strip():
-                return result.stdout.strip()
-            return "無說明紀錄"
+            if result.returncode != 0:
+                return "無法取得說明"
+            messages = [m.strip() for m in result.stdout.split(chr(0x1e)) if m.strip()]
+            if not messages:
+                return "無說明紀錄"
+            for msg in messages:
+                if not msg.startswith(self._AUTO_COMMIT_PREFIXES):
+                    return msg
+            return messages[0]
         except Exception:
             return "無法取得說明"
 
