@@ -12,7 +12,7 @@
 
 - 桌面工具：輔助 Delft3D FM Suite（D-Flow FM / D-HYDRO 1D2D）的三個工作階段——
   **① 建置模型**（版本控管、模型檢視）→ **② 執行模擬**（預檢、分割、MPI 執行、監控）→ **③ 檢視成果**（結果檢核、淹水統計、情境比較）。
-- 技術：Python（目前環境 3.14）、**Flet 0.86.5**（v2.0 起；v1.x 為 CustomTkinter），以 `flet pack` 打包成 Windows 單一執行檔。
+- 技術：Python（目前環境 3.14）、**Flet 0.86.5**（v2.0 起；v1.x 為 CustomTkinter），以 `build_exe.py`（PyInstaller）打包成 Windows 單一執行檔（畫面引擎不包進 exe，第一次啟動時才準備）。
 - 目標平台：**僅 Windows**（使用者工作站：Windows、Delft3D FM Suite 2026.02 1D2D、Intel MPI）。
 - 入口：`app.py`（Flet 版 v2.0）；畫面在 `ui/`，核心邏輯在 `core/`，圖示在 `assets/`。
   舊版 CustomTkinter 介面保留為 `app_ctk.py`（v1.2.1 行為），v2.0 確認穩定後刪除。
@@ -91,9 +91,13 @@
 - 完整清單與安裝方式見 `requirements.txt`（`python -m pip install -r requirements.txt`）。
 - Flet 三個套件（`flet`、`flet-desktop`、`flet-cli`）一律鎖定 `0.86.5`，升級需集中處理並重新核對 API。
 - `customtkinter` 在 M1.5 遷移完成後移除。
-- **打包**：Flet 版使用 `flet pack`（底層為 PyInstaller，產生單一 .exe），**不使用** `flet build windows`（需另裝 Flutter SDK 與 Visual Studio）。
-  netCDF4 需加 hidden imports：`cftime`、`netCDF4.utils`。M0 已實測（2026-09-29）：打包後可正常讀取 NetCDF-4 雨量檔；
-  單一 .exe 約 95 MB（CustomTkinter 版約 32 MB），啟動解壓約需 5～7 秒。
+- **打包**：`build_exe.py`（`build_exe.bat` 會呼叫它），底層為 PyInstaller，產生單一 .exe。**不使用** `flet build windows`（需另裝 Flutter SDK 與 Visual Studio），
+  也不直接用 `flet pack`（會把 42 MB 的畫面引擎包進 exe）。2026-09-30 起：
+  - exe 約 19 MB，**不含 Flet 畫面引擎**。程式啟動時 `ui/client_setup.ensure_client()` 會先檢查 `%USERPROFILE%\.flet\client\`；
+    沒有就用 exe 旁的 `flet-windows.zip`，再沒有就詢問後從 GitHub Release `flet-runtime-<Flet 版本>` 下載。
+  - `build_exe.py --client` 另外產生 `dist\flet-windows.zip`（換成本程式圖示與名稱）；**升級 Flet 或換圖示時**要重新產生並上傳到新的 `flet-runtime-<版本>` Release。
+  - `build_exe.py` 的 `EXCLUDES` 排除目前沒用到的套件（netCDF4、numpy、PIL…）。**M2 開始讀雨量 NetCDF 時要從清單移除 netCDF4／numpy／cftime**（exe 約增加 30 MB，見 OVERVIEW D13），
+    並依 M0 經驗加 hidden imports：`cftime`、`netCDF4.utils`。
 
 ## 常用指令
 
@@ -101,7 +105,8 @@
 python app.py                 # 啟動程式
 python -m pytest -q           # 執行測試
 python -m pytest -m needs_delft3d          # 執行需要 Delft3D 的測試（預設略過）
-build_exe.bat                               # 打包 v2.0：先跑測試，再 flet pack 產生 dist\D3D_Manager_Tool.exe
+build_exe.bat                               # 打包 v2.0：先跑測試，再產生 dist\D3D_Manager_Tool.exe（約 19 MB）
+build_exe.bat --client                      # 另外產生畫面引擎 dist\flet-windows.zip（升級 Flet 或換圖示時）
 python app_ctk.py                           # 啟動舊版 CustomTkinter 介面（v1.2.1）
 pyinstaller D3D_Manager_Tool_ctk.spec       # 打包舊版（僅需緊急修正 v1.x 時）
 ```

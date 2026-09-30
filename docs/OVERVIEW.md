@@ -73,9 +73,9 @@
 ```
 app.py                      程式入口（Flet，v2.0）
 app_ctk.py                  舊版 CustomTkinter 介面（v1.2.1，穩定後刪除）
-ui/                         畫面：theme、dialogs、workspace、home、build_workspace
+ui/                         畫面：theme、dialogs、workspace、home、build_workspace、client_setup（首次啟動準備畫面引擎）
 assets/                     程式圖示（icon.ico、icon.png）
-build_exe.bat               雙擊打包（先測試再 flet pack）
+build_exe.bat / .py        雙擊打包（先測試再 PyInstaller；畫面引擎不包進 exe）
 core/                       核心邏輯：不得 import 任何 UI 套件，全部可單元測試
 ├─ git_control.py           ✅ 版本控管（GitModelManager）
 ├─ findings.py              📐 Finding / Severity（預檢、檢核、健檢共用）
@@ -138,7 +138,8 @@ research/                   技術雛形（不隨程式發佈）
 | v1.1.1 | 2026-08-17 | Git 身分顯示欄與設定視窗；下拉選單提示文字；Pull 版本加日期時間 |
 | v1.2 | 2026-08-20 | 新增「📜 版本歷史」分頁；內網遠端重構為裸儲存庫，解決推送失敗 |
 | v1.2.1 | 2026-08-27 | 版本說明跳過自動存檔訊息，顯示使用者最後一筆有意義的說明 |
-| v2.0.0 | 開發中 | 介面改用 Flet：主頁面＋三大工作區、新程式圖示；模型檔逐行解析器（分支 `dev/v2.0`，尚未發佈） |
+| v2.0.0-beta | 2026-09-30 | 介面改用 Flet：主頁面＋三大工作區、新程式圖示；模型檔逐行解析器；內網路徑修正、進度條即時更新（exe 約 96 MB） |
+| v2.0.0-beta2 | 開發中 | exe 縮小到約 19 MB：畫面引擎改為第一次啟動時才準備（GitHub Release `flet-runtime-0.86.5`）；排除未使用的套件 |
 
 操作教學：`D-Flow模式檔案管理系統v1.2_操作教學.pptx`（專案根目錄）。
 
@@ -183,6 +184,7 @@ M6、M7 開工前，需先與使用者確認範圍，並把對應 SPEC 從「構
 | # | 議題 | 選項 | 建議 | 最晚決定時間 | 決定 |
 |---|---|---|---|---|---|
 | D3 | 情境精靈修改 DIMR 檔不回寫 .dsproj | 接受並在 UI 提示／另存情境差異供重新套用 | 先接受並提示 | M5 開工前 | 待定 |
+| D13 | 讀雨量 NetCDF 的套件（exe 大小） | netCDF4＋numpy（約 +30 MB，exe 變約 49 MB）／h5py＋numpy（約 +12 MB）／不讀內容、只檢查檔案與 .ext 設定 | 先確認預檢規則實際需要讀 nc 的哪些內容，再選最小的做法 | M2（P3 預檢）開工前 | 待定 |
 | D4 | 成果模組繪圖套件 | matplotlib／Flet 內建圖表 | 時序圖、長條圖先試 Flet 內建圖表；淹水深度圖（大量網格）可能需 matplotlib 產 PNG | M6 開工前 | 待定 |
 
 ### 6.3 構想模組的範圍（需要使用者的實務經驗判斷）
