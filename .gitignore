@@ -1,17 +1,44 @@
-# 忽略 Python 暫存檔
+# ── Python 暫存 ──────────────────────────────────
 __pycache__/
 *.pyc
+.pytest_cache/
 
-# 忽略 PyInstaller 建置產物
-build/
-dist/
-*.spec
-
-# 忽略虛擬環境（如果你未來有建立的話）
+# ── 虛擬環境 ────────────────────────────────────
 .venv/
 venv/
 env/
 
-# 忽略爬蟲抓下來的資料報表
-*.csv
-*.xlsx
+# ── 打包產物（PyInstaller / flet build）──────────
+# 注意：D3D_Manager_Tool.spec 是打包設定，需要納入版本控管（不要忽略 *.spec）
+build/
+dist/
+*.exe
+
+# ── 交接用壓縮檔（內容已解壓到 docs/、tests/）─────
+*.zip
+
+# ── 測試資料夾內若誤跑模式所產生的檔案 ────────────
+# 真實專案模型檔與執行紀錄不進 Git（儲存庫為公開，docs/OVERVIEW.md 待決事項 D2）
+# 換電腦時從 D3D_run_module_handoff.zip 取得；檔案不存在時相關測試自動略過
+tests/fixtures/NWT_KL/
+tests/fixtures/runs/
+tests/fixtures/**/output/
+tests/fixtures/**/run_logs/
+tests/fixtures/**/_backup/
+tests/fixtures/**/.partition_stamp.json
+tests/fixtures/**/*_[0-9][0-9][0-9][0-9].mdu
+tests/fixtures/**/*_[0-9][0-9][0-9][0-9]_net.nc
+tests/fixtures/**/DFM_interpreted_idomain_*
+
+# ── Claude Code 個人設定（每台電腦不同）──────────
+.claude/settings.local.json
+
+# ── 教學簡報（含公司內網路徑截圖，不公開）──
+*.pptx
+
+# ── 圖示設計稿（含公司 Logo，不公開）；程式實際使用的 icon.png 保留 ──
+icon/*
+!icon/icon.png
+
+# ── flet pack 每次自動產生的打包設定（含暫存路徑，無法重用；打包請用 build_exe.bat）──
+D3D_Manager_Tool.spec

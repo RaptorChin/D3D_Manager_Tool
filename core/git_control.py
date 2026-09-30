@@ -704,6 +704,11 @@ class GitModelManager:
         if re.match(r"^[A-Za-z]:[\\/]", url):
             return url.replace("\\", "/")
 
+        # 開頭少了 \\ 的網路路徑：伺服器\共用\專案 或 \伺服器\共用\專案
+        # 不補的話會被當成網址，推送時 Git LFS 報「batch request: missing protocol」
+        if "\\" in url:
+            return "//" + url.lstrip("\\").replace("\\", "/")
+
         return url
 
     @staticmethod
@@ -807,9 +812,32 @@ class GitModelManager:
         if not self.is_filesystem_remote(remote_url):
             return
         path = self.filesystem_remote_to_path(remote_url)
-        os.makedirs(path, exist_ok=True)
+        try:
+            os.makedirs(path, exist_ok=True)
+        except OSError as e:
+            raise Exception(self._remote_path_error_message(path, e)) from e
         bare_dir = os.path.join(path, self.REMOTE_HISTORY_DIRNAME)
         self._ensure_bare_repo(bare_dir)
+
+    @staticmethod
+    def _remote_path_error_message(path, error):
+        """無法建立／存取遠端資料夾時給使用者看的說明（取代 WinError 67 等原始訊息）"""
+        parts = [p for p in path.replace("/", "\\").split("\\") if p]
+        lines = [f"無法存取遠端資料夾：\n{path}\n"]
+        if path.startswith("\\\\") and len(parts) >= 2:
+            share = "\\\\" + "\\".join(parts[:2])
+            if getattr(error, "winerror", None) in (53, 67):
+                lines.append(f"找不到網路共用資料夾「{share}」：伺服器名稱或共用資料夾名稱可能打錯，或這台電腦目前連不到該伺服器。")
+            else:
+                lines.append(f"請確認共用資料夾「{share}」存在，且您有寫入權限。")
+        else:
+            lines.append("請確認路徑存在，且您有寫入權限。")
+        lines.append(
+            "\n內網路徑格式：\\\\伺服器\\共用資料夾\\…\\專案名稱（開頭必須是兩個反斜線）。"
+            "\n建議用「瀏覽」按鈕直接選取，避免打錯。"
+            f"\n\n[系統訊息] {error}"
+        )
+        return "\n".join(lines)
 
     def _sync_lfs_objects(self, remote_path, progress_callback=None, base_pct=0, span=100):
         """把本機 .git/lfs/objects 底下的物件直接複製一份到遠端，取代 Git LFS 本身在 Windows
@@ -1007,7 +1035,9 @@ class GitModelManager:
             )
 
     def push_with_progress(self, progress_callback):
-        remote = self.get_remote_url()
+        # 先前綁定時若存成未正規化的路徑（例如開頭少了 \\ 的網路路徑），在這裡修正，
+        # 內網遠端接著會由 set_remote_url() 把 origin 改寫成正確位置
+        remote = self.normalize_remote_url(self.get_remote_url())
         if not remote:
             raise Exception("尚未綁定遠端路徑，請先在「遠端伺服器備份」分頁輸入並綁定。")
 
