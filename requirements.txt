@@ -1,2 +1,14 @@
-customtkinter
-pyinstaller
+# 安裝方式（在專案資料夾執行）：python -m pip install -r requirements.txt
+
+# ── 程式執行所需 ─────────────────────────────────
+customtkinter              # v1.2.1 現行介面；M1.5 遷移到 Flet 後移除
+flet==0.86.5               # 新介面；API 變動很大，務必鎖定版本（見 docs/UI_PLAN.md §6）
+flet-desktop==0.86.5       # Flet 桌面視窗執行環境
+numpy
+netCDF4                    # 讀 NetCDF-4/HDF5 雨量檔與輸出檔
+
+# ── 開發與打包 ───────────────────────────────────
+flet-cli==0.86.5           # 提供 flet pack 打包指令
+pyinstaller                # flet pack 底層使用
+pytest
+pillow                     # 測試用（檢查圖示檔）
