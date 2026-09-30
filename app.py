@@ -5,7 +5,7 @@
   ② 執行模擬、③ 檢視成果：v2.0 先顯示「規劃中」，依里程碑 M2 以後逐步開放
 
 執行（在專案資料夾）：python app.py
-打包：flet pack app.py -n D3D_Manager_Tool -i assets/icon.ico --add-data "assets;assets" --hidden-import cftime netCDF4.utils
+打包：build_exe.bat（或 python build_exe.py）；畫面引擎不包進 exe，第一次啟動時由 ui/client_setup.py 準備
 舊版 CustomTkinter 介面：python app_ctk.py（確認 v2.0 穩定後移除）
 """
 import flet as ft
@@ -131,4 +131,7 @@ def main(page: ft.Page):
 
 
 if __name__ == "__main__":
-    ft.run(main, assets_dir=str(t.assets_dir()))
+    from ui.client_setup import ensure_client
+
+    if ensure_client():  # 第一次啟動時下載／解壓畫面引擎；取消或失敗就不開視窗
+        ft.run(main, assets_dir=str(t.assets_dir()))

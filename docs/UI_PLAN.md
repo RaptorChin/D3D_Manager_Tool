@@ -108,8 +108,9 @@
 
 - Flet 是 Python 套件，底層用 Flutter 繪製畫面，可做出卡片、圓角、動效、Material 圖示與色彩語意。
 - 仍是 Python，可直接 `import core.*`，**不用重寫任何業務邏輯**。
-- 可打包成 Windows 單一執行檔（`flet pack`，底層為 PyInstaller），使用方式不變（雙擊 .exe）。
+- 可打包成 Windows 單一執行檔（底層為 PyInstaller），使用方式不變（雙擊 .exe）。
   M0 實測：Flet＋netCDF4 打包後可正常讀檔；約 95 MB、啟動約 5～7 秒。不採用 `flet build windows`（需另裝 Flutter SDK 與 Visual Studio）。
+  2026-09-30 改為 `build_exe.py`：畫面引擎（42 MB）不包進 exe，第一次啟動時由 `ui/client_setup.py` 準備，exe 約 19 MB、啟動約 3 秒（詳見 CLAUDE.md「相依套件」）。
 - 內建圖表元件，可評估是否取代 matplotlib（成果模組，OVERVIEW D4）。
 
 ### M1.5 實作結果（2026-09-29）
@@ -124,7 +125,7 @@
 | `ui/build_workspace.py` | ① 模型建置：v1.2.1 全部功能（對照表見檔案開頭） |
 | `assets/icon.ico`、`icon.png` | 由 `icon/icon.png`（方案 C）裁切圓角、去白底；ico 含 16～256 px |
 | `app_ctk.py` | 舊版 CustomTkinter 介面，原封保留，v2.0 穩定後刪除 |
-| `build_exe.bat` | 雙擊打包：先跑測試，再 `flet pack` |
+| `build_exe.bat` | 雙擊打包：先跑測試，再 `flet pack`（2026-09-30 改為呼叫 `build_exe.py`） |
 
 與 v1.2.1 的行為差異（刻意改善，功能不變）：
 - 按「儲存建置進度」「恢復至此版本」「狀態檢查」時若尚未選擇工作資料夾，會提示而非無反應；建置標籤空白時會提示。
